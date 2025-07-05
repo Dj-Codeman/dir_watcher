@@ -1,0 +1,16 @@
+[package]
+name = "dir_watcher"
+version = "1.0.0"
+edition = "2024"
+authors = [
+    "Darrion Whitfield <dwhitfield@ramfield.net>"
+]
+description = "Simple crate for monitoring directories for changes"
+homepage = "https://docs.artisanhosting.net"
+license = "MIT"
+
+[dependencies]
+dusa_collection_utils = "4.0.0"
+futures = "0.3.31"
+notify = "8.0.0"
+tokio = "1.45.0"
