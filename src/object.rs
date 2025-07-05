@@ -7,8 +7,8 @@ use dusa_collection_utils::{
 };
 use notify::event::{AccessKind, AccessMode, CreateKind, MetadataKind, ModifyKind, RemoveKind};
 use notify::{Config, EventKind, RecommendedWatcher, Watcher};
-pub use notify::RecursiveMode;
-pub use notify::Event;
+use notify::RecursiveMode;
+use notify::Event;
 use std::sync::atomic::Ordering;
 use std::sync::{
     Arc,
