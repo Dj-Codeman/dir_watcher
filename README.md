@@ -17,7 +17,7 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-dir_watcher = "1.1.0"
+dir_watcher = "1.2.0"
 ```
 
 ## Quick start
