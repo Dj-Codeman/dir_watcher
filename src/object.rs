@@ -242,9 +242,9 @@ impl RawFileMonitor {
                             "Watcher channel closed unexpectedly. {}",
                             err.to_string()
                         );
-                        sleep(Duration::from_secs(cloned_timeout)).await;
                     }
                 }
+                sleep(Duration::from_secs(cloned_timeout)).await;
             }
         });
 
