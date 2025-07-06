@@ -2,7 +2,7 @@
 
 Dir Watcher is a small Rust library for monitoring filesystem events on a directory.
 It wraps the [`notify`](https://docs.rs/notify/) crate and exposes an async API
-for receiving change events via a Tokio broadcast channel.
+for receiving change events via a Tokio `mpsc` channel.
 
 ## Features
 

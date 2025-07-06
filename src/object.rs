@@ -15,8 +15,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64},
 };
 use std::time::Duration;
-use tokio::sync::broadcast::{self, Receiver};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::broadcast;
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -33,7 +33,7 @@ pub enum MonitorMode {
 
 #[derive(Debug)]
 pub struct RawFileMonitor {
-    sender: RwLock<Option<Arc<broadcast::Sender<Event>>>>, // needs to be in a rwlock or mutex
+    receiver: RwLock<Option<mpsc::Receiver<Event>>>, // stores the outward event receiver
     handle: RwLock<Option<JoinHandle<()>>>,                // needs to be in a mutex or rwlock
     events: AtomicU64,
     controls: Arc<ToggleControl>,
@@ -72,7 +72,7 @@ impl RawFileMonitor {
             Self::sanitize_ignored_dirs(options.base_dir(), options.ignored_dirs());
 
         Self {
-            sender: RwLock::new(None),
+            receiver: RwLock::new(None),
             handle: RwLock::new(None),
             events: AtomicU64::from(0),
             controls,
@@ -89,7 +89,11 @@ impl RawFileMonitor {
     }
 
     pub async fn start(&self) {
-        if let Some((watcher_tx, event_tx)) = self.initialize_watcher_channels().await {
+        if let Some((watcher_tx, event_tx, event_rx)) = self.initialize_watcher_channels().await {
+            {
+                let mut rx_lock = self.receiver.write().await;
+                *rx_lock = Some(event_rx);
+            }
             self.controls.resume();
             self.spawn_event_loop(watcher_tx, event_tx);
         } else {
@@ -104,13 +108,13 @@ impl RawFileMonitor {
         &self,
     ) -> Option<(
         Arc<Mutex<broadcast::Sender<Event>>>,
-        Arc<broadcast::Sender<Event>>,
+        mpsc::Sender<Event>,
+        mpsc::Receiver<Event>,
     )> {
         let (watcher_tx, _) = broadcast::channel::<Event>(2048);
-        let (event_tx, _) = broadcast::channel(10240);
+        let (event_tx, event_rx) = mpsc::channel(65536);
 
         let watcher_tx = Arc::new(Mutex::new(watcher_tx));
-        let event_tx = Arc::new(event_tx);
 
         let handler_tx = watcher_tx.clone();
         let handler = move |res: notify::Result<Event>| {
@@ -155,7 +159,7 @@ impl RawFileMonitor {
                 *inner_watcher = Some(watcher)
             }
             // self.watcher = Some(watcher);
-            Some((watcher_tx, event_tx))
+            Some((watcher_tx, event_tx, event_rx))
         } else {
             None
         }
@@ -164,7 +168,7 @@ impl RawFileMonitor {
     fn spawn_event_loop(
         &self,
         watcher_tx: Arc<Mutex<broadcast::Sender<Event>>>,
-        event_tx: Arc<broadcast::Sender<Event>>,
+        event_tx: mpsc::Sender<Event>,
     ) {
         let cloned_controls = self.controls.clone();
         let cloned_ignored = self.ignored.clone();
@@ -228,13 +232,20 @@ impl RawFileMonitor {
                             continue;
                         }
 
-                        if cloned_event_tx.send(event).is_err() {
+                        if cloned_event_tx.send(event).await.is_err() {
                             log!(
                                 LogLevel::Error,
                                 "Failed to forward event: Event channel closed."
                             );
                             continue;
                         }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log!(
+                            LogLevel::Trace,
+                            "Dropped {} events due to lag",
+                            count
+                        );
                     }
                     Err(err) => {
                         log!(
@@ -252,9 +263,7 @@ impl RawFileMonitor {
             *inner_handle = Some(handle);
         }
 
-        if let Ok(mut inner_sender) = self.sender.try_write() {
-            *inner_sender = Some(event_tx)
-        }
+        // event receiver is stored during initialization
     }
 
     /// remedy will automatically try to resolve the [`FileMonitor`] poison
@@ -298,12 +307,11 @@ impl RawFileMonitor {
 
             // check channel
 
-            if let Ok(channel) = self.sender.try_read() {
+            if let Ok(channel) = self.receiver.try_read() {
                 match &*channel {
-                    Some(writer) => {
-                        let reader = writer.subscribe();
-                        if reader.is_closed() {
-                            log!(LogLevel::Trace, "reader serves a closed channel");
+                    Some(rx) => {
+                        if rx.is_closed() {
+                            log!(LogLevel::Trace, "receiver channel closed");
                             bad_chanel = true;
                         }
                     }
@@ -387,10 +395,10 @@ impl RawFileMonitor {
         }
     }
 
-    pub async fn subscribe(&self) -> Option<Receiver<Event>> {
-        let sender_lock = self.sender.read().await;
-        if let Some(sender) = &*sender_lock {
-            Some(sender.subscribe())
+    pub async fn subscribe(&self) -> Option<mpsc::Receiver<Event>> {
+        let mut rx_lock = self.receiver.write().await;
+        if rx_lock.is_some() {
+            rx_lock.take()
         } else {
             if self.poisoned.load(Ordering::Relaxed) {
                 log!(LogLevel::Warn, "Directory Monitor is poisoned");
